@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>VRM VR Viewer</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden;
+    background: #10121a; font-family: -apple-system, "Hiragino Sans", "Yu Gothic", sans-serif;
+    color: #eee;
+  }
+  #canvasWrap { position: fixed; inset: 0; }
+  canvas { display: block; width: 100%; height: 100%; }
+
+  #panel {
+    position: fixed; top: 10px; left: 10px; z-index: 10;
+    width: 300px; max-height: calc(100vh - 20px); overflow-y: auto;
+    background: rgba(20, 22, 32, 0.88); border: 1px solid #444a5f;
+    border-radius: 12px; padding: 12px 14px; box-sizing: border-box;
+    font-size: 13px; line-height: 1.5; backdrop-filter: blur(6px);
+  }
+  #panel h1 { font-size: 14px; margin: 0 0 8px; color: #9fd0ff; }
+  #panel h2 { font-size: 12px; margin: 14px 0 6px; color: #aab2c8; border-top: 1px solid #333a4d; padding-top: 10px; }
+  #panel h2:first-of-type { border-top: none; padding-top: 0; }
+  .row { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; flex-wrap: wrap; }
+  label.fileBtn {
+    display: inline-block; background: #2c3350; border: 1px solid #4a5478;
+    border-radius: 8px; padding: 8px 10px; cursor: pointer; font-size: 12px;
+    flex: 1; text-align: center;
+  }
+  label.fileBtn:active { background: #3a4368; }
+  input[type=file] { display: none; }
+  button {
+    background: #2c3350; border: 1px solid #4a5478; color: #eee;
+    border-radius: 8px; padding: 7px 10px; cursor: pointer; font-size: 12px;
+  }
+  button:hover { background: #3a4368; }
+  button:disabled { opacity: 0.4; cursor: default; }
+  button.primary { background: #3b6fd6; border-color: #5a8cf0; }
+  button.primary:hover { background: #4a7ce0; }
+  #playlist { list-style: none; margin: 0; padding: 0; }
+  #playlist li {
+    display: flex; align-items: center; gap: 6px; padding: 6px 8px;
+    margin-bottom: 4px; border-radius: 8px; background: #1c2032; font-size: 12px;
+  }
+  #playlist li.active { background: #2c4a80; }
+  #playlist li .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #playlist li button { padding: 3px 7px; font-size: 11px; }
+  .toggleRow { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+  #status { font-size: 11px; color: #8fa0c8; white-space: pre-wrap; margin-top: 8px; min-height: 1.4em; }
+  #vrBtnHolder { margin-top: 10px; }
+  #vrBtnHolder button { width: 100%; padding: 10px; font-size: 13px; }
+  a.vrbutton { display: block !important; position: static !important; }
+  #hint { font-size: 11px; color: #6f7a99; margin-top: 10px; border-top: 1px solid #333a4d; padding-top: 8px; }
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-thumb { background: #444a5f; border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<div id="canvasWrap"></div>
+
+<div id="panel">
+  <h1>🕶️ VRM VR Viewer</h1>
+
+  <h2>1. VRMモデルを読み込み</h2>
+  <div class="row">
+    <label class="fileBtn">VRMファイルを選択
+      <input type="file" id="vrmInput" accept=".vrm">
+    </label>
+  </div>
+
+  <h2>2. VRMAモーションを読み込み（複数可）</h2>
+  <div class="row">
+    <label class="fileBtn">VRMAファイルを追加
+      <input type="file" id="vrmaInput" accept=".vrma" multiple>
+    </label>
+    <button id="clearPlaylistBtn" title="再生リストを空にする">クリア</button>
+  </div>
+  <div class="toggleRow">
+    <input type="checkbox" id="autoAdvance">
+    <label for="autoAdvance">自動で次のモーションへ</label>
+  </div>
+  <ul id="playlist"></ul>
+
+  <h2>3. VR表示</h2>
+  <div id="vrBtnHolder"></div>
+  <div class="toggleRow" style="margin-top:8px;">
+    <button id="recenterBtn">位置をリセット</button>
+  </div>
+
+  <div id="status">VRMファイルを選択してください。</div>
+
+  <div id="hint">
+    左スティック: 移動 / 右スティック左右: スナップターン<br>
+    トリガー: 次のモーション再生 / グリップ: 位置リセット
+  </div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/",
+    "@pixiv/three-vrm": "https://cdn.jsdelivr.net/npm/@pixiv/three-vrm@3/lib/three-vrm.module.min.js",
+    "@pixiv/three-vrm-animation": "https://cdn.jsdelivr.net/npm/@pixiv/three-vrm-animation@3/lib/three-vrm-animation.module.min.js"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { VRButton } from 'three/addons/webxr/VRButton.js';
+import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
+import { VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
+import { VRMAnimationLoaderPlugin, createVRMAnimationClip } from '@pixiv/three-vrm-animation';
+
+// ---------- 基本セットアップ ----------
+const statusEl = document.getElementById('status');
+function setStatus(msg) { statusEl.textContent = msg; console.log('[VRM-VR]', msg); }
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x181c28);
+scene.fog = new THREE.Fog(0x181c28, 8, 30);
+
+const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.05, 100);
+camera.position.set(0, 1.4, 2.2);
+
+// カメラリグ（VR移動用にカメラを内包するグループ）
+const cameraRig = new THREE.Group();
+cameraRig.add(camera);
+scene.add(cameraRig);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.xr.enabled = true;
+document.getElementById('canvasWrap').appendChild(renderer.domElement);
+
+// VRボタン（dom-overlayでパネルをVR内にも表示）
+const vrButton = VRButton.createButton(renderer, {
+  optionalFeatures: ['dom-overlay', 'local-floor'],
+  domOverlay: { root: document.getElementById('panel') }
+});
+document.getElementById('vrBtnHolder').appendChild(vrButton);
+
+// デスクトップ確認用のOrbitControls（VR中は無効化）
+const orbitControls = new OrbitControls(camera, renderer.domElement);
+orbitControls.target.set(0, 1.1, 0);
+orbitControls.enableDamping = true;
+orbitControls.update();
+
+// ライト
+scene.add(new THREE.HemisphereLight(0xffffff, 0x444455, 1.2));
+const dirLight = new THREE.DirectionalLight(0xffffff, 1.4);
+dirLight.position.set(1, 3, 2);
+scene.add(dirLight);
+
+// 床（グリッド + 半透明パネル）
+const grid = new THREE.GridHelper(12, 24, 0x556080, 0x2a3048);
+scene.add(grid);
+const floor = new THREE.Mesh(
+  new THREE.CircleGeometry(6, 32),
+  new THREE.MeshStandardMaterial({ color: 0x22263a, roughness: 1, metalness: 0 })
+);
+floor.rotation.x = -Math.PI / 2;
+floor.position.y = -0.001;
+scene.add(floor);
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// ---------- ローダー ----------
+const loader = new GLTFLoader();
+loader.register((parser) => new VRMLoaderPlugin(parser));
+loader.register((parser) => new VRMAnimationLoaderPlugin(parser));
+
+let currentVrm = null;
+let mixer = null;
+let currentAction = null;
+const playlist = []; // { name, clip }
+let currentIndex = -1;
+
+const MODEL_Z = -1.4; // ユーザー正面の距離
+
+function disposeVrm(vrm) {
+  if (!vrm) return;
+  scene.remove(vrm.scene);
+  VRMUtils.deepDispose(vrm.scene);
+}
+
+function loadVrmFile(file) {
+  const url = URL.createObjectURL(file);
+  setStatus(`VRM読み込み中: ${file.name}`);
+  loader.load(
+    url,
+    (gltf) => {
+      const vrm = gltf.userData.vrm;
+      VRMUtils.removeUnnecessaryVertices(gltf.scene);
+      VRMUtils.removeUnnecessaryJoints(gltf.scene);
+      vrm.scene.traverse((obj) => { obj.frustumCulled = false; });
+
+      disposeVrm(currentVrm);
+      if (mixer) { mixer.stopAllAction(); mixer = null; currentAction = null; }
+      currentIndex = -1;
+      updatePlaylistUI();
+
+      currentVrm = vrm;
+      vrm.scene.position.set(0, 0, MODEL_Z);
+      vrm.scene.rotation.y = Math.PI; // ユーザーと向き合わせる
+      scene.add(vrm.scene);
+
+      mixer = new THREE.AnimationMixer(vrm.scene);
+      mixer.addEventListener('finished', () => {
+        if (document.getElementById('autoAdvance').checked) nextTrack();
+      });
+
+      setStatus(`VRM読み込み完了: ${file.name}`);
+      URL.revokeObjectURL(url);
+
+      if (playlist.length > 0) playTrack(0);
+    },
+    undefined,
+    (err) => {
+      console.error(err);
+      setStatus(`VRM読み込み失敗: ${file.name}\n${err.message || err}`);
+      URL.revokeObjectURL(url);
+    }
+  );
+}
+
+function loadVrmaFile(file) {
+  const url = URL.createObjectURL(file);
+  setStatus(`VRMA読み込み中: ${file.name}`);
+  loader.load(
+    url,
+    (gltf) => {
+      const vrmAnimations = gltf.userData.vrmAnimations;
+      if (!vrmAnimations || vrmAnimations.length === 0) {
+        setStatus(`VRMAデータが見つかりません: ${file.name}`);
+        URL.revokeObjectURL(url);
+        return;
+      }
+      // clip作成はVRM読み込み後にcurrentVrmが必要
+      const vrmAnimation = vrmAnimations[0];
+      playlist.push({ name: file.name, vrmAnimation, clip: null });
+      updatePlaylistUI();
+      setStatus(`VRMA追加: ${file.name}（${playlist.length}件）`);
+      URL.revokeObjectURL(url);
+    },
+    undefined,
+    (err) => {
+      console.error(err);
+      setStatus(`VRMA読み込み失敗: ${file.name}\n${err.message || err}`);
+      URL.revokeObjectURL(url);
+    }
+  );
+}
+
+function ensureClip(entry) {
+  if (!currentVrm) return null;
+  if (!entry.clip) {
+    entry.clip = createVRMAnimationClip(entry.vrmAnimation, currentVrm);
+  }
+  return entry.clip;
+}
+
+function playTrack(index) {
+  if (!currentVrm || !mixer) { setStatus('先にVRMモデルを読み込んでください。'); return; }
+  if (index < 0 || index >= playlist.length) return;
+
+  const entry = playlist[index];
+  const clip = ensureClip(entry);
+  if (!clip) { setStatus('モーションの生成に失敗しました。'); return; }
+
+  const nextAction = mixer.clipAction(clip);
+  nextAction.reset();
+  nextAction.setLoop(document.getElementById('autoAdvance').checked ? THREE.LoopOnce : THREE.LoopRepeat);
+  nextAction.clampWhenFinished = true;
+
+  if (currentAction) {
+    currentAction.fadeOut(0.3);
+  }
+  nextAction.fadeIn(0.3).play();
+  currentAction = nextAction;
+  currentIndex = index;
+  updatePlaylistUI();
+  setStatus(`再生中: ${entry.name}`);
+}
+
+function nextTrack() {
+  if (playlist.length === 0) return;
+  playTrack((currentIndex + 1) % playlist.length);
+}
+
+function updatePlaylistUI() {
+  const ul = document.getElementById('playlist');
+  ul.innerHTML = '';
+  playlist.forEach((entry, i) => {
+    const li = document.createElement('li');
+    if (i === currentIndex) li.classList.add('active');
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'name';
+    nameSpan.textContent = entry.name;
+    const playBtn = document.createElement('button');
+    playBtn.textContent = '▶';
+    playBtn.onclick = () => playTrack(i);
+    const delBtn = document.createElement('button');
+    delBtn.textContent = '✕';
+    delBtn.onclick = () => {
+      playlist.splice(i, 1);
+      if (currentIndex === i) { currentIndex = -1; }
+      else if (currentIndex > i) { currentIndex--; }
+      updatePlaylistUI();
+    };
+    li.appendChild(nameSpan);
+    li.appendChild(playBtn);
+    li.appendChild(delBtn);
+    ul.appendChild(li);
+  });
+}
+
+// ---------- UIイベント ----------
+document.getElementById('vrmInput').addEventListener('change', (e) => {
+  const file = e.target.files[0];
+  if (file) loadVrmFile(file);
+  e.target.value = '';
+});
+
+document.getElementById('vrmaInput').addEventListener('change', (e) => {
+  Array.from(e.target.files).forEach(loadVrmaFile);
+  e.target.value = '';
+});
+
+document.getElementById('clearPlaylistBtn').addEventListener('click', () => {
+  playlist.length = 0;
+  currentIndex = -1;
+  if (currentAction) { currentAction.stop(); currentAction = null; }
+  updatePlaylistUI();
+  setStatus('再生リストをクリアしました。');
+});
+
+document.getElementById('recenterBtn').addEventListener('click', recenter);
+
+function recenter() {
+  cameraRig.position.set(0, 0, 0);
+  cameraRig.rotation.set(0, 0, 0);
+  setStatus('位置をリセットしました。');
+}
+
+// ---------- コントローラー（移動・スナップターン・トリガー操作） ----------
+const controllerModelFactory = new XRControllerModelFactory();
+
+for (let i = 0; i < 2; i++) {
+  const controller = renderer.xr.getController(i);
+  cameraRig.add(controller);
+
+  const grip = renderer.xr.getControllerGrip(i);
+  grip.add(controllerModelFactory.createControllerModel(grip));
+  cameraRig.add(grip);
+
+  controller.addEventListener('selectstart', () => nextTrack());
+  controller.addEventListener('squeezestart', () => recenter());
+}
+
+let snapTurnCooldown = false;
+const MOVE_SPEED = 1.6; // m/s
+const SNAP_ANGLE = THREE.MathUtils.degToRad(30);
+
+function handleLocomotion(frame, delta) {
+  if (!renderer.xr.isPresenting || !frame) return;
+  const session = renderer.xr.getSession();
+  if (!session) return;
+
+  for (const source of session.inputSources) {
+    if (!source.gamepad || !source.handedness) continue;
+    const axes = source.gamepad.axes;
+    if (axes.length < 4) continue;
+    const x = axes[2];
+    const y = axes[3];
+
+    if (source.handedness === 'left') {
+      // 移動：カメラのYaw方向に対して相対移動
+      if (Math.abs(x) > 0.15 || Math.abs(y) > 0.15) {
+        const camYaw = new THREE.Euler().setFromQuaternion(camera.getWorldQuaternion(new THREE.Quaternion()), 'YXZ').y;
+        const forward = new THREE.Vector3(Math.sin(camYaw), 0, Math.cos(camYaw));
+        const right = new THREE.Vector3(Math.cos(camYaw), 0, -Math.sin(camYaw));
+        const move = new THREE.Vector3();
+        move.addScaledVector(forward, -y * MOVE_SPEED * delta);
+        move.addScaledVector(right, x * MOVE_SPEED * delta);
+        cameraRig.position.add(move);
+      }
+    } else if (source.handedness === 'right') {
+      // スナップターン
+      if (Math.abs(x) > 0.6) {
+        if (!snapTurnCooldown) {
+          cameraRig.rotation.y -= Math.sign(x) * SNAP_ANGLE;
+          snapTurnCooldown = true;
+        }
+      } else if (Math.abs(x) < 0.3) {
+        snapTurnCooldown = false;
+      }
+    }
+  }
+}
+
+// ---------- レンダーループ ----------
+const clock = new THREE.Clock();
+
+renderer.setAnimationLoop((time, frame) => {
+  const delta = Math.min(clock.getDelta(), 0.1);
+
+  if (mixer) mixer.update(delta);
+  if (currentVrm) currentVrm.update(delta);
+
+  handleLocomotion(frame, delta);
+
+  if (!renderer.xr.isPresenting) {
+    orbitControls.update();
+  }
+
+  renderer.render(scene, camera);
+});
+
+setStatus('準備完了。VRMファイルを選択してください。');
+</script>
+</body>
+</html>
