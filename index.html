@@ -196,35 +196,50 @@ function disposeVrm(vrm) {
   VRMUtils.deepDispose(vrm.scene);
 }
 
+function applyLoadedVrm(gltf, displayName) {
+  const vrm = gltf.userData.vrm;
+  VRMUtils.removeUnnecessaryVertices(gltf.scene);
+  VRMUtils.removeUnnecessaryJoints(gltf.scene);
+  vrm.scene.traverse((obj) => { obj.frustumCulled = false; });
+
+  disposeVrm(currentVrm);
+  if (mixer) { mixer.stopAllAction(); mixer = null; currentAction = null; }
+  currentIndex = -1;
+  updatePlaylistUI();
+
+  currentVrm = vrm;
+  vrm.scene.position.set(0, 0, MODEL_Z);
+  vrm.scene.rotation.y = Math.PI; // ユーザーと向き合わせる
+  scene.add(vrm.scene);
+
+  mixer = new THREE.AnimationMixer(vrm.scene);
+  mixer.addEventListener('finished', () => {
+    if (document.getElementById('autoAdvance').checked) nextTrack();
+  });
+
+  setStatus(`VRM読み込み完了: ${displayName}`);
+}
+
+function applyLoadedVrma(gltf, displayName) {
+  const vrmAnimations = gltf.userData.vrmAnimations;
+  if (!vrmAnimations || vrmAnimations.length === 0) {
+    setStatus(`VRMAデータが見つかりません: ${displayName}`);
+    return false;
+  }
+  playlist.push({ name: displayName, vrmAnimation: vrmAnimations[0], clip: null });
+  updatePlaylistUI();
+  setStatus(`VRMA追加: ${displayName}（${playlist.length}件）`);
+  return true;
+}
+
 function loadVrmFile(file) {
   const url = URL.createObjectURL(file);
   setStatus(`VRM読み込み中: ${file.name}`);
   loader.load(
     url,
     (gltf) => {
-      const vrm = gltf.userData.vrm;
-      VRMUtils.removeUnnecessaryVertices(gltf.scene);
-      VRMUtils.removeUnnecessaryJoints(gltf.scene);
-      vrm.scene.traverse((obj) => { obj.frustumCulled = false; });
-
-      disposeVrm(currentVrm);
-      if (mixer) { mixer.stopAllAction(); mixer = null; currentAction = null; }
-      currentIndex = -1;
-      updatePlaylistUI();
-
-      currentVrm = vrm;
-      vrm.scene.position.set(0, 0, MODEL_Z);
-      vrm.scene.rotation.y = Math.PI; // ユーザーと向き合わせる
-      scene.add(vrm.scene);
-
-      mixer = new THREE.AnimationMixer(vrm.scene);
-      mixer.addEventListener('finished', () => {
-        if (document.getElementById('autoAdvance').checked) nextTrack();
-      });
-
-      setStatus(`VRM読み込み完了: ${file.name}`);
+      applyLoadedVrm(gltf, file.name);
       URL.revokeObjectURL(url);
-
       if (playlist.length > 0) playTrack(0);
     },
     undefined,
@@ -242,17 +257,7 @@ function loadVrmaFile(file) {
   loader.load(
     url,
     (gltf) => {
-      const vrmAnimations = gltf.userData.vrmAnimations;
-      if (!vrmAnimations || vrmAnimations.length === 0) {
-        setStatus(`VRMAデータが見つかりません: ${file.name}`);
-        URL.revokeObjectURL(url);
-        return;
-      }
-      // clip作成はVRM読み込み後にcurrentVrmが必要
-      const vrmAnimation = vrmAnimations[0];
-      playlist.push({ name: file.name, vrmAnimation, clip: null });
-      updatePlaylistUI();
-      setStatus(`VRMA追加: ${file.name}（${playlist.length}件）`);
+      applyLoadedVrma(gltf, file.name);
       URL.revokeObjectURL(url);
     },
     undefined,
@@ -262,6 +267,47 @@ function loadVrmaFile(file) {
       URL.revokeObjectURL(url);
     }
   );
+}
+
+// ---------- デフォルトアセットの自動読み込み ----------
+// index.html と同じフォルダに以下のファイルを置いておくと、起動時に自動で読み込みます。
+//   AliciaSolid.vrm, VRMA_01.vrma 〜 VRMA_07.vrma
+const DEFAULT_VRM = 'AliciaSolid.vrm';
+const DEFAULT_VRMA_LIST = [
+  'VRMA_01.vrma', 'VRMA_02.vrma', 'VRMA_03.vrma', 'VRMA_04.vrma',
+  'VRMA_05.vrma', 'VRMA_06.vrma', 'VRMA_07.vrma'
+];
+
+async function autoLoadDefaults() {
+  setStatus(`デフォルトモデル（${DEFAULT_VRM}）を確認中...`);
+  try {
+    const gltf = await loader.loadAsync('./' + DEFAULT_VRM);
+    applyLoadedVrm(gltf, DEFAULT_VRM);
+  } catch (err) {
+    console.warn('デフォルトVRMの自動読み込みに失敗しました', err);
+    setStatus(
+      `${DEFAULT_VRM} が見つかりませんでした。\n` +
+      `index.html と同じフォルダに配置するか、手動でVRMファイルを選択してください。`
+    );
+    return;
+  }
+
+  let loadedCount = 0;
+  for (const name of DEFAULT_VRMA_LIST) {
+    try {
+      const gltf = await loader.loadAsync('./' + name);
+      if (applyLoadedVrma(gltf, name)) loadedCount++;
+    } catch (err) {
+      console.warn(`${name} の自動読み込みに失敗しました（スキップ）`, err);
+    }
+  }
+
+  if (loadedCount > 0) {
+    playTrack(0);
+    setStatus(`デフォルトのVRMと${loadedCount}件のVRMAを読み込みました。`);
+  } else {
+    setStatus(`${DEFAULT_VRM} を読み込みました。VRMAファイルは見つかりませんでした。`);
+  }
 }
 
 function ensureClip(entry) {
@@ -429,7 +475,7 @@ renderer.setAnimationLoop((time, frame) => {
   renderer.render(scene, camera);
 });
 
-setStatus('準備完了。VRMファイルを選択してください。');
+autoLoadDefaults();
 </script>
 </body>
 </html>
