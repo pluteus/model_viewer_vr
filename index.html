@@ -84,10 +84,23 @@
   </div>
   <ul id="playlist"></ul>
 
-  <h2>3. VR表示</h2>
+  <h2>3. 背景を読み込み（GLB）</h2>
+  <div class="row">
+    <label class="fileBtn">背景GLBファイルを選択
+      <input type="file" id="bgInput" accept=".glb,.gltf">
+    </label>
+    <button id="clearBgBtn" title="背景を削除してデフォルトの床に戻す">削除</button>
+  </div>
+  <div class="toggleRow">
+    <input type="checkbox" id="showDefaultFloor" checked>
+    <label for="showDefaultFloor">デフォルトの床/グリッドを表示</label>
+  </div>
+
+  <h2>4. VR表示</h2>
   <div id="vrBtnHolder"></div>
-  <div class="toggleRow" style="margin-top:8px;">
+  <div class="toggleRow" style="margin-top:8px; gap:8px;">
     <button id="recenterBtn">位置をリセット</button>
+    <button id="exitVrBtn" disabled>没入モードを終了</button>
   </div>
 
   <div id="status">VRMファイルを選択してください。</div>
@@ -194,6 +207,68 @@ function disposeVrm(vrm) {
   if (!vrm) return;
   scene.remove(vrm.scene);
   VRMUtils.deepDispose(vrm.scene);
+}
+
+// 汎用: Object3Dツリーのgeometry/materialを破棄
+function disposeObject3D(obj) {
+  if (!obj) return;
+  obj.traverse((node) => {
+    if (node.geometry) node.geometry.dispose();
+    if (node.material) {
+      const materials = Array.isArray(node.material) ? node.material : [node.material];
+      materials.forEach((mat) => {
+        Object.values(mat).forEach((value) => {
+          if (value && value.isTexture) value.dispose();
+        });
+        mat.dispose();
+      });
+    }
+  });
+}
+
+// ---------- 背景GLB ----------
+const bgLoader = new GLTFLoader(); // VRM系プラグインは不要な純粋なGLTF/GLBローダー
+let backgroundScene = null;
+
+function setDefaultFloorVisible(visible) {
+  grid.visible = visible;
+  floor.visible = visible;
+  document.getElementById('showDefaultFloor').checked = visible;
+}
+
+function loadBackgroundFile(file) {
+  const url = URL.createObjectURL(file);
+  setStatus(`背景読み込み中: ${file.name}`);
+  bgLoader.load(
+    url,
+    (gltf) => {
+      if (backgroundScene) {
+        scene.remove(backgroundScene);
+        disposeObject3D(backgroundScene);
+      }
+      backgroundScene = gltf.scene;
+      scene.add(backgroundScene);
+      setDefaultFloorVisible(false);
+      setStatus(`背景読み込み完了: ${file.name}`);
+      URL.revokeObjectURL(url);
+    },
+    undefined,
+    (err) => {
+      console.error(err);
+      setStatus(`背景読み込み失敗: ${file.name}\n${err.message || err}`);
+      URL.revokeObjectURL(url);
+    }
+  );
+}
+
+function clearBackground() {
+  if (backgroundScene) {
+    scene.remove(backgroundScene);
+    disposeObject3D(backgroundScene);
+    backgroundScene = null;
+  }
+  setDefaultFloorVisible(true);
+  setStatus('背景を削除しました。');
 }
 
 function applyLoadedVrm(gltf, displayName) {
@@ -393,6 +468,19 @@ document.getElementById('clearPlaylistBtn').addEventListener('click', () => {
   setStatus('再生リストをクリアしました。');
 });
 
+document.getElementById('bgInput').addEventListener('change', (e) => {
+  const file = e.target.files[0];
+  if (file) loadBackgroundFile(file);
+  e.target.value = '';
+});
+
+document.getElementById('clearBgBtn').addEventListener('click', clearBackground);
+
+document.getElementById('showDefaultFloor').addEventListener('change', (e) => {
+  grid.visible = e.target.checked;
+  floor.visible = e.target.checked;
+});
+
 document.getElementById('recenterBtn').addEventListener('click', recenter);
 
 function recenter() {
@@ -400,6 +488,24 @@ function recenter() {
   cameraRig.rotation.set(0, 0, 0);
   setStatus('位置をリセットしました。');
 }
+
+// ---------- 没入モードの終了 ----------
+const exitVrBtn = document.getElementById('exitVrBtn');
+
+exitVrBtn.addEventListener('click', () => {
+  const session = renderer.xr.getSession();
+  if (session) session.end();
+});
+
+renderer.xr.addEventListener('sessionstart', () => {
+  exitVrBtn.disabled = false;
+  setStatus('VRモードに入りました。');
+});
+
+renderer.xr.addEventListener('sessionend', () => {
+  exitVrBtn.disabled = true;
+  setStatus('VRモードを終了しました。');
+});
 
 // ---------- コントローラー（移動・スナップターン・トリガー操作） ----------
 const controllerModelFactory = new XRControllerModelFactory();
